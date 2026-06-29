@@ -1,0 +1,163 @@
+name: Quality Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-check:
+    name: Frontend quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run unit and component tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  backend-check:
+    name: Backend quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Run backend quality gate
+        run: make quality
+
+  api-check:
+    name: Playwright API tests
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-check
+      - backend-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run API tests
+        run: |
+          rm -f /tmp/schedule-app-api.db /tmp/schedule-app-api.db-shm /tmp/schedule-app-api.db-wal
+          (cd backend && GOPROXY=https://goproxy.cn,direct DATABASE_DSN=/tmp/schedule-app-api.db SERVER_ADDR=:18084 go run ./cmd/server) &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
+
+          for i in {1..30}; do
+            if curl -fsS http://localhost:18084/health; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://localhost:18084/health
+          cd frontend
+          API_BASE_URL=http://localhost:18084 npm run test:api
+
+      - name: Upload API test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-playwright-report
+          path: |
+            frontend/playwright-report/api
+            frontend/test-results
+          if-no-files-found: ignore
+
+  e2e-check:
+    name: Playwright E2E tests
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-check
+      - backend-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        working-directory: frontend
+
+      - name: Upload E2E test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-playwright-report
+          path: |
+            frontend/playwright-report/e2e
+            frontend/test-results
+          if-no-files-found: ignore

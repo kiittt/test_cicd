@@ -235,6 +235,81 @@ test('date filter returns schedules for the selected day', async ({
   }
 })
 
+test('date filter matches schedules by start day for overnight events', async ({
+  request,
+}, testInfo) => {
+  const cleanup = createCleanup()
+  try {
+    const token = shortToken(testInfo.title)
+    const overnight = await createSchedule(
+      request,
+      cleanup,
+      buildPayload(
+        token,
+        {
+          title: `${token}-overnight`,
+          startTime: '2026-07-06T23:30:00Z',
+          endTime: '2026-07-07T00:30:00Z',
+        },
+        { uniqueTitle: false },
+      ),
+    )
+
+    const startDayResponse = await request.get(
+      `/api/schedules?keyword=${encodeURIComponent(token)}&date=2026-07-06`,
+    )
+    expect(startDayResponse.status()).toBe(200)
+    const startDaySchedules = (await startDayResponse.json()) as Schedule[]
+    expect(startDaySchedules.map((schedule) => schedule.id)).toContain(
+      overnight.id,
+    )
+
+    const endDayResponse = await request.get(
+      `/api/schedules?keyword=${encodeURIComponent(token)}&date=2026-07-07`,
+    )
+    expect(endDayResponse.status()).toBe(200)
+    await expectJson(endDayResponse, [])
+  } finally {
+    await cleanup(request)
+  }
+})
+
+test('special characters are persisted and searchable', async ({
+  request,
+}, testInfo) => {
+  const cleanup = createCleanup()
+  try {
+    const token = shortToken(testInfo.title)
+    const payload = buildPayload(
+      token,
+      {
+        title: `${token}-特殊字符 !@#`,
+        description: '包含中文、空格和符号 #weekly_sync',
+      },
+      { uniqueTitle: false },
+    )
+    const created = await createSchedule(request, cleanup, payload)
+
+    const response = await request.get(
+      `/api/schedules?keyword=${encodeURIComponent('#weekly_sync')}`,
+    )
+
+    expect(response.status()).toBe(200)
+    const schedules = (await response.json()) as Schedule[]
+    expect(schedules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: created.id,
+          title: payload.title,
+          description: payload.description,
+        }),
+      ]),
+    )
+  } finally {
+    await cleanup(request)
+  }
+})
+
 test('invalid time range returns 400', async ({ request }, testInfo) => {
   const response = await request.post('/api/schedules', {
     data: buildPayload(testInfo.title, {
@@ -257,6 +332,38 @@ test('empty title returns 400', async ({ request }) => {
 
   expect(response.status()).toBe(400)
   await expectJson(response, { message: 'title is required' })
+})
+
+test('invalid status filter returns 400', async ({ request }) => {
+  const response = await request.get('/api/schedules?status=doing')
+
+  expect(response.status()).toBe(400)
+  await expectJson(response, {
+    message: 'status must be todo, done, or cancelled',
+  })
+})
+
+test('invalid date filter returns 400', async ({ request }) => {
+  const response = await request.get('/api/schedules?date=07-01-2026')
+
+  expect(response.status()).toBe(400)
+  await expectJson(response, { message: 'date must use YYYY-MM-DD' })
+})
+
+test('updating missing schedule returns 404', async ({ request }, testInfo) => {
+  const response = await request.put('/api/schedules/999999999', {
+    data: buildPayload(testInfo.title, { title: 'missing-update' }),
+  })
+
+  expect(response.status()).toBe(404)
+  await expectJson(response, { message: 'schedule not found' })
+})
+
+test('non-numeric schedule id returns 400', async ({ request }) => {
+  const response = await request.get('/api/schedules/not-a-number')
+
+  expect(response.status()).toBe(400)
+  await expectJson(response, { message: 'id must be a positive integer' })
 })
 
 test('deleting missing schedule returns 404', async ({ request }) => {
